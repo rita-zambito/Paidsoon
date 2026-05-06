@@ -69,6 +69,7 @@ export default function Home() {
   const [editingInvoiceId, setEditingInvoiceId] = useState<string | null>(null);
   const [editingCustomerId, setEditingCustomerId] = useState<string | null>(null);
   const [invoiceFilter, setInvoiceFilter] = useState<"all" | InvoiceStatus>("all");
+  const [selectedMessageInvoiceId, setSelectedMessageInvoiceId] = useState("");
   const [session, setSession] = useState<Session | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [notice, setNotice] = useState("");
@@ -149,6 +150,140 @@ export default function Home() {
     setInvoices((invoicesResult.data as InvoiceRow[]).map(invoiceFromRow));
     setSettings(settingsResult.data ? settingsFromRow(settingsResult.data as BusinessSettingsRow) : defaultSettings);
     setIsLoading(false);
+  }
+
+  async function loadDemoData() {
+    if (!supabase || !user) {
+      return;
+    }
+
+    const demoCustomers: Array<Omit<Customer, "id">> = [
+      {
+        name: "Green Lane Bakery",
+        contact: "Sarah Collins",
+        email: "sarah@greenlanebakery.co.uk",
+        notes: "Friendly bakery in London. Usually pays after a reminder."
+      },
+      {
+        name: "Bright Tap Plumbing",
+        contact: "James Miller",
+        email: "accounts@brighttap.co.uk",
+        notes: "Small plumbing business. Prefers short and direct emails."
+      },
+      {
+        name: "North & Co Salon",
+        contact: "Amelia Hughes",
+        email: "hello@northcosalon.co.uk",
+        notes: "Independent salon. Keep the tone warm and polite."
+      },
+      {
+        name: "Oakfield Design Studio",
+        contact: "Daniel Reed",
+        email: "daniel@oakfieldstudio.co.uk",
+        notes: "Design studio with multiple invoices open."
+      }
+    ];
+
+    const existingDemoNames = new Set(customers.map((customer) => customer.name.toLowerCase()));
+    const customersToCreate = demoCustomers.filter((customer) => !existingDemoNames.has(customer.name.toLowerCase()));
+
+    const createdCustomers = customersToCreate.length
+      ? await supabase
+        .from("customers")
+        .insert(customersToCreate.map((customer) => ({
+          user_id: user.id,
+          name: customer.name,
+          contact: customer.contact,
+          email: customer.email,
+          notes: customer.notes
+        })))
+        .select()
+      : { data: [], error: null };
+
+    if (createdCustomers.error) {
+      setNotice(createdCustomers.error.message);
+      return;
+    }
+
+    const nextCustomers = [
+      ...customers,
+      ...((createdCustomers.data || []) as CustomerRow[]).map(customerFromRow)
+    ];
+    const customerIdByName = new Map(nextCustomers.map((customer) => [customer.name.toLowerCase(), customer.id]));
+    const existingInvoiceNumbers = new Set(invoices.map((invoice) => invoice.invoiceNumber.toLowerCase()));
+    const demoInvoices: Array<Omit<Invoice, "id">> = [
+      {
+        customer: "Green Lane Bakery",
+        invoiceNumber: "INV-1001",
+        amount: 850,
+        status: "overdue",
+        dueDate: "2026-04-25",
+        notes: "Website updates and monthly maintenance."
+      },
+      {
+        customer: "Bright Tap Plumbing",
+        invoiceNumber: "INV-1002",
+        amount: 1260,
+        status: "sent",
+        dueDate: "2026-05-09",
+        notes: "Lead capture page and booking form."
+      },
+      {
+        customer: "North & Co Salon",
+        invoiceNumber: "INV-1003",
+        amount: 390,
+        status: "paid",
+        dueDate: "2026-05-01",
+        notes: "Social media graphics package."
+      },
+      {
+        customer: "Oakfield Design Studio",
+        invoiceNumber: "INV-1004",
+        amount: 1850,
+        status: "overdue",
+        dueDate: "2026-04-18",
+        notes: "Landing page build and conversion copy."
+      },
+      {
+        customer: "Oakfield Design Studio",
+        invoiceNumber: "INV-1005",
+        amount: 640,
+        status: "sent",
+        dueDate: "2026-05-12",
+        notes: "Extra design revisions."
+      }
+    ];
+    const invoicesToCreate = demoInvoices.filter((invoice) => !existingInvoiceNumbers.has(invoice.invoiceNumber.toLowerCase()));
+
+    if (!customersToCreate.length && !invoicesToCreate.length) {
+      setNotice("Demo data is already loaded.");
+      window.setTimeout(() => setNotice(""), 1800);
+      return;
+    }
+
+    const createdInvoices = invoicesToCreate.length
+      ? await supabase
+        .from("invoices")
+        .insert(invoicesToCreate.map((invoice) => invoiceToInsert(
+          invoice,
+          user.id,
+          customerIdByName.get(invoice.customer.toLowerCase())
+        )))
+        .select()
+      : { data: [], error: null };
+
+    if (createdInvoices.error) {
+      setNotice(createdInvoices.error.message);
+      return;
+    }
+
+    setCustomers(nextCustomers);
+    setInvoices((current) => [
+      ...((createdInvoices.data || []) as InvoiceRow[]).map(invoiceFromRow),
+      ...current
+    ]);
+    setNotice("Demo customers and invoices loaded.");
+    window.setTimeout(() => setNotice(""), 1800);
   }
 
   async function addInvoice(event: FormEvent<HTMLFormElement>) {
@@ -321,14 +456,9 @@ export default function Home() {
   }
 
   function generateFromInvoice(invoice: Invoice) {
-    setMessage(buildPaymentMessage(
-      invoice.customer,
-      invoice.invoiceNumber,
-      invoice.amount,
-      "gentle",
-      messageSignOff(settings),
-      settings.paymentNote || defaultSettings.paymentNote
-    ));
+    setSelectedMessageInvoiceId(invoice.id);
+    setAiNotice("");
+    setMessage(`Ready to write a payment reminder for ${invoice.invoiceNumber}.`);
     setView("messages");
   }
 
@@ -437,6 +567,7 @@ export default function Home() {
               </div>
               <div className="heroActions">
                 <button className="primaryButton" onClick={() => setView("messages")}>Write chase message</button>
+                <button className="secondaryButton" onClick={loadDemoData}>Load demo data</button>
               </div>
             </section>
 
@@ -557,7 +688,14 @@ export default function Home() {
         {view === "messages" && (
           <section className="grid">
             <Panel title="Generate message">
-              <MessageForm onGenerate={setMessage} onNotice={setAiNotice} settings={settings} />
+              <MessageForm
+                invoices={invoices}
+                onGenerate={setMessage}
+                onNotice={setAiNotice}
+                onSelectedInvoiceId={setSelectedMessageInvoiceId}
+                selectedInvoiceId={selectedMessageInvoiceId}
+                settings={settings}
+              />
             </Panel>
 
             <Panel title="Ready to send">
@@ -868,15 +1006,47 @@ function CustomerEditForm({
 }
 
 function MessageForm({
+  invoices,
   onGenerate,
   onNotice,
+  onSelectedInvoiceId,
+  selectedInvoiceId,
   settings
 }: {
+  invoices: Invoice[];
   onGenerate: (message: string) => void;
   onNotice: (notice: string) => void;
+  onSelectedInvoiceId: (invoiceId: string) => void;
+  selectedInvoiceId: string;
   settings: BusinessSettings;
 }) {
   const [isGenerating, setIsGenerating] = useState(false);
+  const [customer, setCustomer] = useState("");
+  const [invoiceNumber, setInvoiceNumber] = useState("");
+  const [amount, setAmount] = useState("");
+  const openInvoices = invoices.filter((invoice) => invoice.status !== "paid");
+
+  useEffect(() => {
+    const selectedInvoice = invoices.find((invoice) => invoice.id === selectedInvoiceId);
+
+    if (!selectedInvoice) {
+      return;
+    }
+
+    setCustomer(selectedInvoice.customer);
+    setInvoiceNumber(selectedInvoice.invoiceNumber);
+    setAmount(String(selectedInvoice.amount));
+  }, [invoices, selectedInvoiceId]);
+
+  function chooseInvoice(invoiceId: string) {
+    onSelectedInvoiceId(invoiceId);
+
+    if (!invoiceId) {
+      setCustomer("");
+      setInvoiceNumber("");
+      setAmount("");
+    }
+  }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -884,9 +1054,9 @@ function MessageForm({
     onNotice("");
     const formData = new FormData(event.currentTarget);
     const payload = {
-      customer: String(formData.get("customer")),
-      invoiceNumber: String(formData.get("invoiceNumber")),
-      amount: Number(formData.get("amount")),
+      customer,
+      invoiceNumber,
+      amount: Number(amount),
       tone: String(formData.get("tone")) as "gentle" | "firm" | "final",
       paymentNote: settings.paymentNote || defaultSettings.paymentNote,
       signOff: messageSignOff(settings),
@@ -928,9 +1098,20 @@ function MessageForm({
 
   return (
     <form className="form" onSubmit={handleSubmit}>
-      <label>Customer<input name="customer" required placeholder="Acme Studio Ltd" /></label>
-      <label>Invoice number<input name="invoiceNumber" required placeholder="INV-1007" /></label>
-      <label>Amount<input name="amount" required type="number" min="0" step="10" placeholder="850" /></label>
+      <label>
+        Saved invoice
+        <select value={selectedInvoiceId} onChange={(event) => chooseInvoice(event.target.value)}>
+          <option value="">Manual message</option>
+          {openInvoices.map((invoice) => (
+            <option key={invoice.id} value={invoice.id}>
+              {invoice.customer} - {invoice.invoiceNumber} - {formatCurrency(invoice.amount)}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label>Customer<input name="customer" required placeholder="Acme Studio Ltd" value={customer} onChange={(event) => setCustomer(event.target.value)} /></label>
+      <label>Invoice number<input name="invoiceNumber" required placeholder="INV-1007" value={invoiceNumber} onChange={(event) => setInvoiceNumber(event.target.value)} /></label>
+      <label>Amount<input name="amount" required type="number" min="0" step="10" placeholder="850" value={amount} onChange={(event) => setAmount(event.target.value)} /></label>
       <label>
         Tone
         <select name="tone">
